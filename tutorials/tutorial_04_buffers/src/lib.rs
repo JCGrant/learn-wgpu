@@ -1,4 +1,4 @@
-use std::iter;
+use std::{f32::consts::PI, iter};
 
 use wgpu::util::DeviceExt;
 use winit::{
@@ -74,7 +74,19 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+    challenge_vertex_buffer: wgpu::Buffer,
+    challenge_index_buffer: wgpu::Buffer,
+    num_challenge_indices: u32,
+    use_challenge_shape: bool,
     window: Window,
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let f = |n: i32| -> f32 {
+        let k = (n as f32 + h / 60.0) % 6.0;
+        return v - v * s * f32::max(0.0, f32::min(k, f32::min(4.0 - k, 1.0)));
+    };
+    [f(5), f(3), f(1)]
 }
 
 impl State {
@@ -211,6 +223,54 @@ impl State {
         });
         let num_indices = INDICES.len() as u32;
 
+        let num_points_on_edge = 60;
+        let challenge_verts = vec![
+            vec![Vertex {
+                position: [0.0, 0.0, 0.0],
+                color: [1.0, 1.0, 1.0],
+            }],
+            (0..num_points_on_edge)
+                .map(|i| {
+                    let slice = i as f32 / num_points_on_edge as f32;
+                    let radians = slice * 2.0 * PI;
+                    let degrees = slice * 360.0;
+                    Vertex {
+                        position: [0.5 * radians.cos(), -0.5 * radians.sin(), 0.0],
+                        color: hsv_to_rgb(degrees, 1.0, 1.0),
+                    }
+                })
+                .collect::<Vec<_>>(),
+        ]
+        .concat();
+
+        println!("{:?}", challenge_verts);
+
+        let challenge_indices = (0u16..num_points_on_edge)
+            .flat_map(|i| {
+                vec![
+                    (i + 1) % num_points_on_edge + 1,
+                    i % num_points_on_edge + 1,
+                    0,
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        println!("{:?}", challenge_indices);
+
+        let num_challenge_indices = challenge_indices.len() as u32;
+
+        let challenge_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Challenge Vertex Buffer"),
+                contents: bytemuck::cast_slice(&challenge_verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let challenge_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Challenge Index Buffer"),
+            contents: bytemuck::cast_slice(&challenge_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
         Self {
             surface,
             device,
@@ -221,6 +281,10 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
+            challenge_vertex_buffer,
+            challenge_index_buffer,
+            num_challenge_indices,
+            use_challenge_shape: false,
             window,
         }
     }
@@ -240,7 +304,22 @@ impl State {
 
     #[allow(unused_variables)]
     fn input(&mut self, event: &WindowEvent) -> bool {
-        false
+        match event {
+            WindowEvent::KeyboardInput {
+                device_id,
+                input:
+                    KeyboardInput {
+                        state,
+                        virtual_keycode: Some(VirtualKeyCode::Space),
+                        ..
+                    },
+                ..
+            } => {
+                self.use_challenge_shape = *state == ElementState::Pressed;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn update(&mut self) {}
@@ -277,9 +356,18 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            let (vertex_buffer, index_buffer, num_indices) = if self.use_challenge_shape {
+                (
+                    &self.challenge_vertex_buffer,
+                    &self.challenge_index_buffer,
+                    self.num_challenge_indices,
+                )
+            } else {
+                (&self.vertex_buffer, &self.index_buffer, self.num_indices)
+            };
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..num_indices, 0, 0..1);
         }
 
         self.queue.submit(iter::once(encoder.finish()));
